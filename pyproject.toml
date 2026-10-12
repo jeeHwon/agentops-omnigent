@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentops-omnigent"
+version = "1.0.0"
+description = "Omnigent runtime adapter for Markdown-first Harness Agent releases"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6,<7",
+]
+
+[project.scripts]
+aops-omni = "agentops_omnigent.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentops_omnigent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
