@@ -12,38 +12,175 @@ function agentMarkdownPath(path, type = "file") {
   return type === "directory" || parts.at(-1).toLowerCase().endsWith(".md");
 }
 
-function filesystemPath(url) {
-  const match = url.pathname.match(/\/v1\/sessions\/[^/]+\/resources\/environments\/[^/]+\/filesystem(?:\/(.*))?$/);
+function filesystemRequest(url) {
+  const match = url.pathname.match(/\/v1\/sessions\/([^/]+)\/resources\/environments\/[^/]+\/filesystem(?:\/(.*))?$/);
   if (!match) return null;
-  try { return decodeURIComponent(match[1] || ""); }
+  try {
+    return {
+      sessionId: decodeURIComponent(match[1]),
+      relative: decodeURIComponent(match[2] || "").replace(/^\/+|\/+$/g, ""),
+    };
+  }
   catch { return null; }
 }
 
-// Omnigent's standard workspace editor can browse every file visible to the
-// Runner. Agent Project users should see only the editable Harness contract.
-// The server also exposes a restricted Markdown API; this filter keeps the
-// stock file tree and editor aligned with the same contract.
+const sessionProjectCache = new Map();
+
+async function nativeJson(path, options = {}) {
+  const response = await nativeFetch(`${BASE}${path}`, {
+    credentials: "same-origin",
+    ...options,
+  });
+  if (!response.ok) return { response, body: null };
+  return { response, body: await response.clone().json() };
+}
+
+function projectApiPath(projectName, relative = "") {
+  const encoded = String(projectName).split("/").map(encodeURIComponent).join("/");
+  const suffix = String(relative).split("/").filter(Boolean).map(encodeURIComponent).join("/");
+  return `/v1/agentops/projects/${encoded}/files${suffix ? `/${suffix}` : ""}`;
+}
+
+async function agentProjectForSession(sessionId) {
+  if (!sessionProjectCache.has(sessionId)) {
+    sessionProjectCache.set(sessionId, (async () => {
+      const sessionResult = await nativeJson(
+        `/v1/sessions/${encodeURIComponent(sessionId)}?include_items=false&include_liveness=false&include_usage=false`,
+      );
+      const projectId = sessionResult.body?.project_id;
+      if (!projectId) return null;
+      const projectResult = await nativeJson(`/v1/projects/${encodeURIComponent(projectId)}`);
+      const project = projectResult.body;
+      if (!project?.config?.agentops_source || !project?.name) return null;
+      return { name: project.name, source: project.config.agentops_source };
+    })());
+  }
+  return sessionProjectCache.get(sessionId);
+}
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function directoryListing(files, relative) {
+  const prefix = relative ? `${relative}/` : "";
+  const entries = new Map();
+  for (const file of files) {
+    if (!file.startsWith(prefix)) continue;
+    const remainder = file.slice(prefix.length);
+    if (!remainder) continue;
+    const [name, ...tail] = remainder.split("/");
+    const path = prefix + name;
+    const type = tail.length ? "directory" : "file";
+    const existing = entries.get(path);
+    if (!existing || type === "directory") {
+      entries.set(path, {
+        id: path,
+        object: "session.environment.filesystem.entry",
+        name,
+        path,
+        type,
+        bytes: null,
+        modified_at: null,
+      });
+    }
+  }
+  const data = [...entries.values()].sort((left, right) => (
+    left.name === right.name ? 0 : left.name < right.name ? -1 : 1
+  ));
+  return {
+    object: "list",
+    data,
+    first_id: data[0]?.id || null,
+    last_id: data.at(-1)?.id || null,
+    has_more: false,
+  };
+}
+
+async function requestJsonBody(input, options) {
+  if (options.body !== undefined && options.body !== null) {
+    if (typeof options.body === "string") return JSON.parse(options.body);
+    return options.body;
+  }
+  if (input instanceof Request) return input.clone().json();
+  return {};
+}
+
+async function projectFilesystemResponse(input, options, filesystem, method) {
+  const project = await agentProjectForSession(filesystem.sessionId);
+  if (!project) return null;
+
+  const listResult = await nativeJson(projectApiPath(project.name));
+  if (!listResult.response.ok || !Array.isArray(listResult.body?.data)) {
+    return listResult.response;
+  }
+  const files = listResult.body.data;
+  const relative = filesystem.relative;
+
+  if (method === "GET") {
+    const isDirectory = !relative || files.some((file) => file.startsWith(`${relative}/`));
+    if (isDirectory) return jsonResponse(directoryListing(files, relative));
+    if (!files.includes(relative)) {
+      return jsonResponse({ error: { code: "not_found", message: `Markdown file not found: ${relative}` } }, 404);
+    }
+    const fileResult = await nativeJson(projectApiPath(project.name, relative));
+    if (!fileResult.response.ok) return fileResult.response;
+    const content = String(fileResult.body?.content ?? "");
+    return jsonResponse({
+      object: "session.environment.filesystem.file_content",
+      path: relative,
+      content,
+      content_type: "text/markdown",
+      encoding: "utf-8",
+      bytes: new TextEncoder().encode(content).length,
+      truncated: false,
+    });
+  }
+
+  if (method === "PUT") {
+    if (!files.includes(relative) || !agentMarkdownPath(relative)) {
+      return jsonResponse({ detail: "기존 표준 Harness Markdown만 편집할 수 있습니다." }, 403);
+    }
+    const body = await requestJsonBody(input, options);
+    const content = typeof body?.content === "string" ? body.content : "";
+    const saved = await nativeFetch(`${BASE}${projectApiPath(project.name, relative)}`, {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    if (!saved.ok) return saved;
+    return jsonResponse({
+      operation: "write",
+      path: relative,
+      created: false,
+      bytes_written: new TextEncoder().encode(content).length,
+    });
+  }
+
+  return jsonResponse({ detail: "Agent Project에서는 Markdown 조회와 저장만 지원합니다." }, 405);
+}
+
+// Omnigent's stock file panel normally reads through the Runner sandbox.
+// Agent Project files are a separate, explicit contract: the editable source
+// folder is authoritative and .aops is disposable. Route the stock panel to
+// the restricted project API so reads and saves always target that source.
 window.fetch = async (input, options = {}) => {
   const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
-  const relative = filesystemPath(url);
-  if (relative === null) return nativeFetch(input, options);
+  const filesystem = filesystemRequest(url);
+  if (filesystem === null) return nativeFetch(input, options);
   const method = String(options.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
-  if (method !== "GET" && !agentMarkdownPath(relative)) {
+  if (method !== "GET" && !agentMarkdownPath(filesystem.relative)) {
     return new Response(JSON.stringify({ detail: "표준 Harness Markdown만 편집할 수 있습니다." }), {
       status: 403,
       headers: { "Content-Type": "application/json" },
     });
   }
-  const response = await nativeFetch(input, options);
-  if (method !== "GET" || !response.ok) return response;
-  let body;
-  try { body = await response.clone().json(); }
-  catch { return response; }
-  if (!Array.isArray(body?.data)) return response;
-  body.data = body.data.filter((item) => agentMarkdownPath(item.path, item.type));
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  return new Response(JSON.stringify(body), { status: response.status, headers });
+  const projectResponse = await projectFilesystemResponse(input, options, filesystem, method);
+  return projectResponse || nativeFetch(input, options);
 };
 
 async function request(path, options) {
