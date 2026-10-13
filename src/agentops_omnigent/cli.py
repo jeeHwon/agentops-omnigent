@@ -4,7 +4,10 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from codex_agentops.collector import ensure_collector
 from codex_agentops.config import ConfigError, load_settings
@@ -14,7 +17,10 @@ from . import __version__
 from .bundle import (
     OmnigentAdapterError,
     OmnigentBundleBuilder,
+    omnigent_python_path,
+    omnigent_web_dist,
     telemetry_environment,
+    telemetry_server_environment,
     validate_model_service,
     validate_with_omnigent,
 )
@@ -78,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Source: {target}")
             print(f"Omnigent bundle: {bundle.root}")
             return 0
-        if args.command in {"prepare", "validate", "run", "serve"}:
+        if args.command in {"prepare", "validate", "run"}:
             bundle = builder.prepare(args.path, destination=getattr(args, "output", None))
             result = validate_with_omnigent(bundle)
             if args.command in {"prepare", "validate"}:
@@ -91,26 +97,93 @@ def main(argv: list[str] | None = None) -> int:
             validate_model_service(bundle, settings)
             ensure_collector(settings)
             env = {**os.environ, **telemetry_environment(bundle, settings)}
-            if args.command == "run":
-                command = ["omnigent", "run", str(bundle.root), "--server", "local"]
-                if args.prompt:
-                    command.extend(["--prompt", args.prompt])
-                if args.continue_session:
-                    command.append("--continue")
-            else:
-                command = [
-                    "omnigent",
-                    "server",
-                    "--agent",
-                    str(bundle.root),
-                    "--host",
-                    args.host,
-                    "--port",
-                    str(args.port),
-                ]
+            command = ["omnigent", "run", str(bundle.root), "--server", "local"]
+            if args.prompt:
+                command.extend(["--prompt", args.prompt])
+            if args.continue_session:
+                command.append("--continue")
             # Run from the generated bundle so its project-level Omnigent
             # configuration wins over machine-level harness wrappers.
             return subprocess.call(command, env=env, cwd=bundle.root)
+        if args.command == "serve":
+            requested = args.path.expanduser().resolve()
+            if (requested / "AGENTS.md").is_file() and (requested / "spec.md").is_file():
+                projects_root = requested.parent
+                source_roots = [requested]
+            else:
+                projects_root = requested
+                projects_root.mkdir(parents=True, exist_ok=True)
+                source_roots = [
+                    child
+                    for child in sorted(projects_root.iterdir())
+                    if child.is_dir()
+                    and not child.is_symlink()
+                    and (child / "AGENTS.md").is_file()
+                    and (child / "spec.md").is_file()
+                ]
+            bundles = []
+            for source in source_roots:
+                bundle = builder.prepare(source)
+                validate_with_omnigent(bundle)
+                validate_model_service(bundle, settings)
+                bundles.append(bundle)
+            ensure_collector(settings)
+            data_root = omnigent_web_dist().parent
+            env = {
+                **os.environ,
+                **telemetry_server_environment(
+                    settings,
+                    codex_home=data_root / "server-codex-home",
+                ),
+                "AOPS_OMNIGENT_WEB_DIST": str(omnigent_web_dist()),
+            }
+            command = [
+                omnigent_python_path(),
+                "-m",
+                "agentops_omnigent.server",
+                "--projects-root",
+                str(projects_root),
+                "--host",
+                args.host,
+                "--port",
+                str(args.port),
+            ]
+            for bundle in bundles:
+                command.extend(["--agent-source", str(bundle.root)])
+            server = subprocess.Popen(command, env=env, cwd=projects_root)
+            host = None
+            server_url = f"http://127.0.0.1:{args.port}"
+            try:
+                _wait_for_server(server_url, server)
+                host = subprocess.Popen(
+                    [
+                        "omnigent",
+                        "host",
+                        "--server",
+                        server_url,
+                        "--no-open",
+                    ],
+                    env=env,
+                    cwd=projects_root,
+                )
+                print(f"Agent Project UI: {server_url}")
+                while True:
+                    server_status = server.poll()
+                    if server_status is not None:
+                        return server_status
+                    host_status = host.poll()
+                    if host_status is not None:
+                        print(
+                            f"ERROR: Omnigent Host가 종료되었습니다: exit={host_status}",
+                            file=sys.stderr,
+                        )
+                        return host_status or 1
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                return 130
+            finally:
+                _stop_process(host)
+                _stop_process(server)
         if args.command == "register":
             item = service.register_agent(args.path, args.version)
             print(f"Agent 등록 완료: {item.agent_id}@{item.version}")
@@ -119,6 +192,39 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     return 2
+
+
+def _wait_for_server(
+    server_url: str,
+    process: subprocess.Popen,
+    *,
+    timeout: float = 30.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    health_url = f"{server_url}/health"
+    while time.monotonic() < deadline:
+        status = process.poll()
+        if status is not None:
+            raise RuntimeError(f"Omnigent Server 시작 실패: exit={status}")
+        try:
+            with urlopen(health_url, timeout=1.0) as response:
+                if response.status == 200:
+                    return
+        except (OSError, URLError):
+            pass
+        time.sleep(0.2)
+    raise RuntimeError(f"Omnigent Server가 {timeout:.0f}초 안에 준비되지 않았습니다.")
+
+
+def _stop_process(process: subprocess.Popen | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
 
 
 if __name__ == "__main__":

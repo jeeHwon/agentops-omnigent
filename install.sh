@@ -21,13 +21,21 @@ done
 # telemetry contract are covered by this repository's tests. The optional
 # extras are required for Databricks authentication and native OTel spans.
 OMNIGENT_VERSION="0.17.0"
-uv tool install --force "omnigent[databricks,tracing]==${OMNIGENT_VERSION}"
+# ``--reinstall`` is required here because the adapter is supplied through
+# ``--with``.  Without it, uv can keep an older adapter wheel when the local
+# source changes without a version bump, even though Omnigent itself is
+# force-installed.
+uv tool install --force --reinstall \
+  --with "$CORE_REQUIREMENT" \
+  --with "$ROOT" \
+  "omnigent[databricks,tracing]==${OMNIGENT_VERSION}"
 
 # Omnigent 0.17's brokered Databricks route is validated against Codex
 # 0.146.0. Install that version in an adapter-owned directory; the user's
 # normal `codex` command and version remain unchanged.
 AOPS_DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/agentops-omnigent"
 npm install --prefix "$AOPS_DATA_ROOT/codex" @openai/codex@0.146.0
+"$ROOT/scripts/build_omnigent_ui.sh"
 uv tool install --python 3.11 --force --reinstall --with "$CORE_REQUIREMENT" "$ROOT"
 
 cat <<'EOF'
@@ -37,5 +45,5 @@ Omnigent Adapter 설치가 완료되었습니다.
 2. Agent 로드: aops-omni load <agent-id> --version <version>
 3. 로컬 Agent 변환: aops-omni prepare <agent-folder>
 4. REPL 실행: aops-omni run <agent-folder>
-5. Web UI 실행: aops-omni serve <agent-folder>
+5. Web UI 실행: aops-omni serve <projects-folder 또는 agent-folder>
 EOF

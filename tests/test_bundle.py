@@ -14,6 +14,7 @@ from agentops_omnigent.bundle import (
     OmnigentBundleBuilder,
     compatible_codex_path,
     telemetry_environment,
+    telemetry_server_environment,
     validate_model_service,
 )
 
@@ -127,3 +128,22 @@ def test_model_service_preflight_rejects_missing_model(tmp_path):
             settings,
             workspace=_FakeWorkspace("system.ai.gpt-5-5"),
         )
+
+
+def test_multi_agent_server_telemetry_uses_span_agent_identity(tmp_path, monkeypatch):
+    settings = Settings(
+        profile="test-profile",
+        host="https://example.cloud.databricks.com",
+        otel_port=4319,
+        user_name="user@example.com",
+    )
+    monkeypatch.setenv("AOPS_OMNIGENT_CODEX_PATH", compatible_codex_path())
+    monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+
+    env = telemetry_server_environment(settings, codex_home=tmp_path / "codex-home")
+
+    attributes = env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agentops.runtime=omnigent" in attributes
+    assert "agentops.user_name=user@example.com" in attributes
+    assert "agentops.agent_id=" not in attributes
+    assert (tmp_path / "codex-home/config.toml").is_file()

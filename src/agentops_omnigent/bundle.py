@@ -228,6 +228,64 @@ def _omnigent_data_dir() -> Path:
     return data_home.expanduser() / "agentops-omnigent" / "runtime"
 
 
+def omnigent_web_dist() -> Path:
+    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return data_home.expanduser() / "agentops-omnigent" / "web-ui"
+
+
+def omnigent_python_path() -> str:
+    executable = shutil.which("omnigent")
+    if not executable:
+        raise OmnigentAdapterError("omnigent CLI가 설치되지 않았습니다.")
+    first_line = Path(executable).read_text(encoding="utf-8", errors="ignore").splitlines()[0]
+    python = first_line.removeprefix("#!").strip()
+    if not python or not Path(python).is_file():
+        raise OmnigentAdapterError("omnigent CLI의 Python runtime을 확인할 수 없습니다.")
+    return python
+
+
+def telemetry_server_environment(settings: Settings, *, codex_home: Path) -> dict[str, str]:
+    """OTel settings for a multi-Agent Omnigent development server.
+
+    Agent identity is intentionally omitted from the process resource. The
+    bridge reads ``agent.name`` from each completed Omnigent Agent span, so
+    projects sharing one server keep separate MLflow Agent IDs.
+    """
+
+    existing = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
+    capture_content = os.environ.get("AOPS_OMNIGENT_CAPTURE_CONTENT", "true").strip().lower()
+    if capture_content not in {"true", "false"}:
+        raise OmnigentAdapterError("AOPS_OMNIGENT_CAPTURE_CONTENT must be true or false.")
+    values = [item for item in existing.split(",") if item.strip()]
+    values.extend(
+        (
+            "agentops.runtime=omnigent",
+            "agentops.agent_type=harness",
+            f"agentops.user_name={settings.user_name or 'unknown'}",
+        )
+    )
+    codex_home.mkdir(parents=True, exist_ok=True)
+    config = codex_home / "config.toml"
+    if not config.exists():
+        config.write_text("check_for_update_on_startup = false\n", encoding="utf-8")
+    return {
+        "DATABRICKS_CONFIG_PROFILE": settings.profile,
+        "CODEX_HOME": str(codex_home),
+        "OMNIGENT_DATA_DIR": str(_omnigent_data_dir()),
+        "OMNIGENT_CODEX_PATH": compatible_codex_path(),
+        "OMNIGENT_TELEMETRY_ENABLED": "true",
+        "OMNIGENT_OTEL_CAPTURE_CONTENT": capture_content,
+        "OTEL_EXPORTER_OTLP_ENDPOINT": f"http://127.0.0.1:{settings.otel_port}",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "30",
+        "OTEL_BSP_SCHEDULE_DELAY": "500",
+        "OTEL_METRICS_EXPORTER": "none",
+        "OTEL_LOGS_EXPORTER": "none",
+        "OTEL_RESOURCE_ATTRIBUTES": ",".join(values),
+    }
+
+
 def compatible_codex_path() -> str:
     """Return the Codex binary validated by Omnigent 0.17 brokered auth.
 
@@ -267,13 +325,7 @@ def compatible_codex_path() -> str:
 
 
 def validate_with_omnigent(bundle: OmnigentBundle) -> dict[str, Any]:
-    executable = shutil.which("omnigent")
-    if not executable:
-        raise OmnigentAdapterError("omnigent CLI가 설치되지 않았습니다.")
-    first_line = Path(executable).read_text(encoding="utf-8", errors="ignore").splitlines()[0]
-    python = first_line.removeprefix("#!").strip()
-    if not python or not Path(python).is_file():
-        raise OmnigentAdapterError("omnigent CLI의 Python runtime을 확인할 수 없습니다.")
+    python = omnigent_python_path()
     code = (
         "from pathlib import Path; "
         "from omnigent.spec.parser import parse; "
