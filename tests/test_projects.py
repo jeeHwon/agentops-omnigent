@@ -10,7 +10,11 @@ from codex_agentops.config import Settings
 from codex_agentops.manifest import create_agent, load_manifest
 
 from agentops_omnigent.bundle import OmnigentBundle
-from agentops_omnigent.projects import AgentProjectError, AgentProjectManager
+from agentops_omnigent.projects import (
+    AgentProjectError,
+    AgentProjectManager,
+    project_validation_response,
+)
 
 
 class _Builder:
@@ -98,6 +102,27 @@ def test_registry_release_loads_as_local_project(manager):
     assert prepared.source.name == "검토 Agent"
     assert prepared.agent_id == "registry-agent"
     assert manager.list_registry()[0]["skills"] == ["one", "two"]
+
+
+def test_ui_can_validate_and_register_project(manager):
+    prepared = manager.create("safe-agent", "safe-agent")
+    assert project_validation_response(prepared) == {
+        "valid": True,
+        "agent_id": "safe-agent",
+        "version": "working",
+        "source": str(manager.projects_root / "safe-agent"),
+        "omnigent_agent_id": "omni-safe-agent",
+        "skills": ["request-structurer"],
+        "subagents": ["validator"],
+    }
+
+    registered = manager.register("safe-agent", "1.0.0")
+    assert registered == {
+        "agent_id": "safe-agent",
+        "version": "1.0.0",
+        "name": "Safe Agent",
+        "skills": ["request-structurer"],
+    }
 
 
 def test_markdown_api_exposes_only_editable_definition_files(manager):

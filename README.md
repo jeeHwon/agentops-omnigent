@@ -46,6 +46,20 @@ aops-omni serve ~/agent-projects --host 127.0.0.1 --port 6767
 
 Project를 선택하면 그 아래에서 세션을 만들고 대화할 수 있습니다. 세션의 파일 영역에서 `AGENTS.md`, `README.md`, `spec.md`, `skills/**/*.md`, `agents/**/*.md`를 열어 저장할 수 있습니다.
 
+Project 영역의 **검증·등록** 버튼에서는 현재 Agent를 검증하고 새 버전을 입력해 Registry에 등록할 수 있습니다. 따라서 Web UI 안에서 다음 개발 주기를 완료할 수 있습니다.
+
+```text
+Agent 생성 또는 Registry에서 불러오기
+        ↓
+Markdown 편집
+        ↓
+새 세션에서 대화 테스트
+        ↓
+검증·등록 → 새 Release 버전 입력
+        ↓
+UC Skills + Release Artifact + Agent Registry 등록
+```
+
 ## 3. 수정 내용 적용
 
 원본 Markdown과 실행용 bundle은 역할이 다릅니다.
@@ -62,7 +76,9 @@ Omnigent Runner → Codex
 
 ## 4. Registry 등록
 
-개발이 끝난 Agent는 원본 폴더를 새 Release로 등록합니다.
+개발이 끝난 Agent는 Project 영역의 **검증·등록** 버튼을 눌러 새 Release로 등록합니다. 검증 결과에서 Agent ID, 현재 Release, Skill과 Sub-agent 수를 확인한 뒤 새 버전을 입력합니다.
+
+동일한 작업을 터미널에서 수행할 수도 있습니다.
 
 ```bash
 aops-omni validate ~/agent-projects/<project-name>

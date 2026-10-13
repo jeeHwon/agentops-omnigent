@@ -55,6 +55,20 @@ class SaveMarkdownRequest(BaseModel):
     content: str
 
 
+def project_validation_response(prepared: PreparedProject) -> dict[str, Any]:
+    """Return the validation summary consumed by the Omnigent project UI."""
+
+    return {
+        "valid": True,
+        "agent_id": prepared.agent_id,
+        "version": prepared.version,
+        "source": str(prepared.source),
+        "omnigent_agent_id": prepared.omnigent_agent_id,
+        "skills": list(prepared.bundle.skill_names),
+        "subagents": list(prepared.bundle.subagent_names),
+    }
+
+
 class AgentProjectManager:
     """Own editable Agent sources and assemble their disposable Omnigent bundles."""
 
@@ -326,12 +340,7 @@ def create_agentops_router(
     async def prepare_project(project_name: str) -> dict[str, Any]:
         try:
             prepared = await asyncio.to_thread(manager.prepare, manager.project_path(project_name))
-            return {
-                "agent_id": prepared.agent_id,
-                "version": prepared.version,
-                "source": str(prepared.source),
-                "omnigent_agent_id": prepared.omnigent_agent_id,
-            }
+            return project_validation_response(prepared)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
