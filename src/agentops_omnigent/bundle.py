@@ -117,6 +117,18 @@ class OmnigentBundleBuilder:
                 "skills": sorted(skills),
                 "subagents": sorted(subagents),
                 "codex_version": OMNIGENT_017_CODEX_VERSION,
+                "owner": manifest.owner,
+                "owner_group": manifest.owner_group,
+                "source_system": manifest.source_system,
+                "target_users": list(manifest.target_users),
+                "cost_center": manifest.cost_center,
+                "service_criticality": manifest.service_criticality,
+                "data_sensitivity": manifest.data_sensitivity,
+                "security_access_level": manifest.security_access_level,
+                "risk_level": manifest.risk_level,
+                "hitl_required": manifest.hitl_required,
+                "required_uc_permissions": list(manifest.required_uc_permissions),
+                "use_flagship_model": manifest.use_flagship_model,
             }
             (staging / "runtime.json").write_text(
                 json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -159,6 +171,27 @@ def telemetry_environment(bundle: OmnigentBundle, settings: Settings) -> dict[st
         "agentops.harness_checksum": metadata["harness_sha256"],
         "agentops.skills_checksum": metadata["skills_sha256"],
         "agentops.skill_names": "|".join(bundle.skill_names),
+        "agentops.user_name": settings.user_name or "unknown",
+        "agentops.owner": str(metadata.get("owner") or "unassigned"),
+        "agentops.owner_group": str(metadata.get("owner_group") or "unassigned"),
+        "agentops.source_system": str(metadata.get("source_system") or "unknown"),
+        "agentops.target_users": "|".join(metadata.get("target_users") or []),
+        "agentops.cost_center": str(metadata.get("cost_center") or "unassigned"),
+        "agentops.service_criticality": str(
+            metadata.get("service_criticality") or "unknown"
+        ),
+        "agentops.data_sensitivity": str(metadata.get("data_sensitivity") or "unknown"),
+        "agentops.security_access_level": str(
+            metadata.get("security_access_level") or "unknown"
+        ),
+        "agentops.risk_level": str(metadata.get("risk_level") or "unknown"),
+        "agentops.hitl_required": str(bool(metadata.get("hitl_required"))).lower(),
+        "agentops.required_uc_permissions": "|".join(
+            metadata.get("required_uc_permissions") or []
+        ),
+        "agentops.use_flagship_model": str(
+            bool(metadata.get("use_flagship_model"))
+        ).lower(),
     }
     existing = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
     capture_content = os.environ.get("AOPS_OMNIGENT_CAPTURE_CONTENT", "true").strip().lower()

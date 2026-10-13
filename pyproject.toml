@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentops-omnigent"
-version = "1.0.0"
+version = "1.1.0"
 description = "Omnigent runtime adapter for Markdown-first Harness Agent releases"
 readme = "README.md"
 license = { file = "LICENSE" }

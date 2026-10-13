@@ -70,6 +70,9 @@ def test_bundle_converts_common_source_to_direct_omnigent(tmp_path, monkeypatch)
     assert env["OMNIGENT_DATA_DIR"] == str(tmp_path / "data/agentops-omnigent/runtime")
     assert env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
     assert "agentops.agent_revision=1.0.0" in env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agentops.service_criticality=low" in env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agentops.data_sensitivity=internal" in env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agentops.risk_level=low" in env["OTEL_RESOURCE_ATTRIBUTES"]
 
 
 class _FakeApiClient:
