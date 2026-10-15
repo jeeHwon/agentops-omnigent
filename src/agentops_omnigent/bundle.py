@@ -20,8 +20,10 @@ from codex_agentops.manifest import (
     load_skills,
     load_subagents,
     read_release_metadata,
+    require_source_distribution_allowed,
     validate_agent,
 )
+from codex_agentops.release import ReleaseError, release_from_dict
 
 
 class OmnigentAdapterError(RuntimeError):
@@ -53,10 +55,20 @@ class OmnigentBundleBuilder:
         destination: str | Path | None = None,
     ) -> OmnigentBundle:
         manifest = validate_agent(source)
+        require_source_distribution_allowed(manifest.data_sensitivity, manifest.security_level)
         skills = load_skills(manifest.root)
         subagents = load_subagents(manifest.root, set(skills))
         release = read_release_metadata(manifest.root) or {}
-        version = str(release.get("version") or "working")
+        if release:
+            try:
+                release_from_dict(release, root=manifest.root, expected_agent_id=manifest.agent_id)
+            except ReleaseError as exc:
+                raise OmnigentAdapterError(f"Invalid Agent Release: {exc}") from exc
+        checksums = calculate_definition_checksums(manifest.root)
+        version = str(release.get("version") or "working") if (
+            release.get("harness_sha256") == checksums.harness
+            and release.get("skills_sha256") == checksums.combined_skills
+        ) else "working"
         target = Path(destination or manifest.root / ".aops" / "omnigent").expanduser().resolve()
         if target == manifest.root or manifest.root in target.parents and ".aops" not in target.parts:
             raise OmnigentAdapterError("Omnigent bundle must be generated outside the editable Agent source.")
@@ -65,7 +77,7 @@ class OmnigentBundleBuilder:
         with tempfile.TemporaryDirectory(prefix="aops-omnigent-", dir=target.parent) as temporary:
             staging = Path(temporary) / "bundle"
             staging.mkdir()
-            for name in ("AGENTS.md", "README.md", "spec.md"):
+            for name in ("AGENTS.md", "README.md", "SPEC.md"):
                 shutil.copy2(manifest.root / name, staging / name)
             shutil.copytree(manifest.root / "skills", staging / "skills")
 
@@ -74,7 +86,7 @@ class OmnigentBundleBuilder:
             root_config = _config(
                 name=manifest.agent_id,
                 description=manifest.description,
-                model=manifest.model,
+                model=manifest.model_service,
                 profile=self.settings.profile,
                 workspace_host=self.settings.host,
                 codex_install_root=codex_install_root,
@@ -98,7 +110,7 @@ class OmnigentBundleBuilder:
                     _config(
                         name=name,
                         description=subagent.description,
-                        model=manifest.model,
+                        model=manifest.model_service,
                         profile=self.settings.profile,
                         workspace_host=self.settings.host,
                         codex_install_root=codex_install_root,
@@ -106,10 +118,9 @@ class OmnigentBundleBuilder:
                     ),
                 )
 
-            checksums = calculate_definition_checksums(manifest.root)
             metadata = {
-                "schema_version": 1,
                 "runtime": "omnigent",
+                "agent_type": manifest.agent_type,
                 "agent_id": manifest.agent_id,
                 "release_version": version,
                 "harness_sha256": checksums.harness,
@@ -118,17 +129,19 @@ class OmnigentBundleBuilder:
                 "subagents": sorted(subagents),
                 "codex_version": OMNIGENT_017_CODEX_VERSION,
                 "owner": manifest.owner,
+                "agent_name": manifest.name,
                 "owner_group": manifest.owner_group,
-                "source_system": manifest.source_system,
-                "target_users": list(manifest.target_users),
-                "cost_center": manifest.cost_center,
+                "agent_version": manifest.agent_version,
+                "build_type": manifest.build_type,
+                "serving_type": manifest.serving_type,
+                "origin": manifest.origin,
+                "security_level": manifest.security_level,
+                "uc_permissions": list(manifest.uc_permissions),
+                "flagship_model": manifest.flagship_model,
+                "model_service": manifest.model_service,
+                "success_criteria": manifest.success_criteria,
                 "service_criticality": manifest.service_criticality,
                 "data_sensitivity": manifest.data_sensitivity,
-                "security_access_level": manifest.security_access_level,
-                "risk_level": manifest.risk_level,
-                "hitl_required": manifest.hitl_required,
-                "required_uc_permissions": list(manifest.required_uc_permissions),
-                "use_flagship_model": manifest.use_flagship_model,
             }
             (staging / "runtime.json").write_text(
                 json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -165,39 +178,40 @@ def telemetry_environment(bundle: OmnigentBundle, settings: Settings) -> dict[st
     metadata = json.loads((bundle.root / "runtime.json").read_text(encoding="utf-8"))
     attributes = {
         "agentops.agent_id": bundle.agent_id,
+        "agentops.agent_name": str(metadata.get("agent_name") or "unknown"),
         "agentops.agent_revision": bundle.version,
+        "agentops.agent_version": str(metadata.get("agent_version") or "unknown"),
+        "agentops.build_type": str(metadata.get("build_type") or "unknown"),
+        "agentops.serving_type": str(metadata.get("serving_type") or "unknown"),
+        "agentops.origin": str(metadata.get("origin") or "unknown"),
+        "agentops.security_level": str(metadata.get("security_level") or "unknown"),
+        "agentops.uc_permissions": "|".join(
+            f"{item['object']}:{item['privilege']}" for item in metadata.get("uc_permissions") or []
+        ),
+        "agentops.flagship_model": str(bool(metadata.get("flagship_model"))).lower(),
+        "agentops.model_service": str(metadata.get("model_service") or "unknown"),
+        "agentops.success_criteria": "|".join(
+            f"{key}={value}" for key, value in (metadata.get("success_criteria") or {}).items()
+        ),
         "agentops.runtime": "omnigent",
-        "agentops.agent_type": "harness",
+        "agentops.agent_type": metadata["agent_type"],
         "agentops.harness_checksum": metadata["harness_sha256"],
         "agentops.skills_checksum": metadata["skills_sha256"],
         "agentops.skill_names": "|".join(bundle.skill_names),
         "agentops.user_name": settings.user_name or "unknown",
         "agentops.owner": str(metadata.get("owner") or "unassigned"),
         "agentops.owner_group": str(metadata.get("owner_group") or "unassigned"),
-        "agentops.source_system": str(metadata.get("source_system") or "unknown"),
-        "agentops.target_users": "|".join(metadata.get("target_users") or []),
-        "agentops.cost_center": str(metadata.get("cost_center") or "unassigned"),
         "agentops.service_criticality": str(
             metadata.get("service_criticality") or "unknown"
         ),
         "agentops.data_sensitivity": str(metadata.get("data_sensitivity") or "unknown"),
-        "agentops.security_access_level": str(
-            metadata.get("security_access_level") or "unknown"
-        ),
-        "agentops.risk_level": str(metadata.get("risk_level") or "unknown"),
-        "agentops.hitl_required": str(bool(metadata.get("hitl_required"))).lower(),
-        "agentops.required_uc_permissions": "|".join(
-            metadata.get("required_uc_permissions") or []
-        ),
-        "agentops.use_flagship_model": str(
-            bool(metadata.get("use_flagship_model"))
-        ).lower(),
     }
     existing = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
-    capture_content = os.environ.get("AOPS_OMNIGENT_CAPTURE_CONTENT", "true").strip().lower()
+    capture_content = os.environ.get("AOPS_OMNIGENT_CAPTURE_CONTENT", "false").strip().lower()
     if capture_content not in {"true", "false"}:
         raise OmnigentAdapterError("AOPS_OMNIGENT_CAPTURE_CONTENT must be true or false.")
-    values = [item for item in existing.split(",") if item.strip()]
+    values = [item for item in existing.split(",")
+              if item.strip() and not item.strip().startswith("agentops.")]
     values.extend(f"{key}={value}" for key, value in attributes.items())
     return {
         "DATABRICKS_CONFIG_PROFILE": settings.profile,
@@ -244,7 +258,9 @@ def omnigent_python_path() -> str:
     return python
 
 
-def telemetry_server_environment(settings: Settings, *, codex_home: Path) -> dict[str, str]:
+def telemetry_server_environment(
+    settings: Settings, *, codex_home: Path, projects_root: Path | None = None
+) -> dict[str, str]:
     """OTel settings for a multi-Agent Omnigent development server.
 
     Agent identity is intentionally omitted from the process resource. The
@@ -253,17 +269,20 @@ def telemetry_server_environment(settings: Settings, *, codex_home: Path) -> dic
     """
 
     existing = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
-    capture_content = os.environ.get("AOPS_OMNIGENT_CAPTURE_CONTENT", "true").strip().lower()
+    capture_content = os.environ.get("AOPS_OMNIGENT_CAPTURE_CONTENT", "false").strip().lower()
     if capture_content not in {"true", "false"}:
         raise OmnigentAdapterError("AOPS_OMNIGENT_CAPTURE_CONTENT must be true or false.")
-    values = [item for item in existing.split(",") if item.strip()]
+    values = [item for item in existing.split(",")
+              if item.strip() and not item.strip().startswith("agentops.")]
     values.extend(
         (
             "agentops.runtime=omnigent",
-            "agentops.agent_type=harness",
+            "agentops.agent_type=skill-based-agent",
             f"agentops.user_name={settings.user_name or 'unknown'}",
         )
     )
+    if projects_root is not None:
+        values.append(f"agentops.projects_root={projects_root.resolve()}")
     codex_home.mkdir(parents=True, exist_ok=True)
     config = codex_home / "config.toml"
     if not config.exists():

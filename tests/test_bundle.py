@@ -26,7 +26,9 @@ def test_bundle_converts_common_source_to_direct_omnigent(tmp_path, monkeypatch)
     import shutil
 
     source = tmp_path / "source"
-    shutil.copytree(SAMPLE, source)
+    shutil.copytree(SAMPLE, source, ignore=shutil.ignore_patterns(".aops", ".agents", ".codex"))
+    (source / "eval").mkdir()
+    (source / "eval/eval_dataset.json").write_text('[{"question": "private"}]')
     write_release_metadata(build_release(source, "1.0.0", "main.agentops"))
     settings = Settings(
         profile="test-profile",
@@ -55,9 +57,15 @@ def test_bundle_converts_common_source_to_direct_omnigent(tmp_path, monkeypatch)
     assert (bundle.root / "skills/release-summary/SKILL.md").is_file()
     assert (bundle.root / "agents/validator/config.yaml").is_file()
     assert (bundle.root / "agents/validator/skills/release-validation/SKILL.md").is_file()
+    assert not (bundle.root / "eval").exists()
     metadata = json.loads((bundle.root / "runtime.json").read_text(encoding="utf-8"))
     assert metadata["release_version"] == "1.0.0"
+    assert metadata["agent_type"] == "skill-based-agent"
     assert metadata["codex_version"] == "0.146.0"
+    assert metadata["security_level"] == "일반"
+    assert metadata["flagship_model"] is False
+    assert "source_system" not in metadata
+    assert "required_uc_permissions" not in metadata
     assert "source" not in metadata
     assert "codex_path" not in metadata
 
@@ -65,15 +73,38 @@ def test_bundle_converts_common_source_to_direct_omnigent(tmp_path, monkeypatch)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     env = telemetry_environment(bundle, settings)
     assert env["OMNIGENT_TELEMETRY_ENABLED"] == "true"
-    assert env["OMNIGENT_OTEL_CAPTURE_CONTENT"] == "true"
+    assert env["OMNIGENT_OTEL_CAPTURE_CONTENT"] == "false"
     assert env["OMNIGENT_CODEX_PATH"]
     assert env["CODEX_HOME"] == str(bundle.codex_home)
     assert env["OMNIGENT_DATA_DIR"] == str(tmp_path / "data/agentops-omnigent/runtime")
     assert env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
     assert "agentops.agent_revision=1.0.0" in env["OTEL_RESOURCE_ATTRIBUTES"]
-    assert "agentops.service_criticality=low" in env["OTEL_RESOURCE_ATTRIBUTES"]
-    assert "agentops.data_sensitivity=internal" in env["OTEL_RESOURCE_ATTRIBUTES"]
-    assert "agentops.risk_level=low" in env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agentops.service_criticality=하" in env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agentops.data_sensitivity=내부" in env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agentops.security_level=일반" in env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agentops.build_type=skill" in env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agentops.success_criteria=correctness_min=0.8" in env["OTEL_RESOURCE_ATTRIBUTES"]
+
+    source_agents = source / "AGENTS.md"
+    source_agents.write_text(source_agents.read_text() + "\n작업 중 변경.\n")
+    updated = OmnigentBundleBuilder(settings).prepare(source, destination=tmp_path / "updated")
+    assert json.loads((updated.root / "runtime.json").read_text())["release_version"] == "working"
+
+
+def test_omnigent_rejects_unsupported_release_metadata(tmp_path):
+    import shutil
+
+    source = tmp_path / "source"
+    shutil.copytree(SAMPLE, source, ignore=shutil.ignore_patterns(".aops", ".agents", ".codex"))
+    path = write_release_metadata(build_release(source, "1.0.0", "main.agentops"))
+    metadata = json.loads(path.read_text())
+    metadata["schema_version"] = 1
+    path.write_text(json.dumps(metadata))
+
+    settings = Settings(profile="test-profile", host="https://example.cloud.databricks.com")
+    with pytest.raises(OmnigentAdapterError, match="Invalid Agent Release"):
+        OmnigentBundleBuilder(settings).prepare(source, destination=tmp_path / "bundle")
+    assert not (tmp_path / "bundle").exists()
 
 
 class _FakeApiClient:
@@ -103,7 +134,7 @@ def test_model_service_preflight_accepts_codex_model(tmp_path):
     import shutil
 
     source = tmp_path / "source"
-    shutil.copytree(SAMPLE, source)
+    shutil.copytree(SAMPLE, source, ignore=shutil.ignore_patterns(".aops", ".agents", ".codex"))
     settings = Settings(profile="test-profile", host="https://example.cloud.databricks.com")
     bundle = OmnigentBundleBuilder(settings).prepare(source, destination=tmp_path / "bundle")
 
@@ -118,7 +149,7 @@ def test_model_service_preflight_rejects_missing_model(tmp_path):
     import shutil
 
     source = tmp_path / "source"
-    shutil.copytree(SAMPLE, source)
+    shutil.copytree(SAMPLE, source, ignore=shutil.ignore_patterns(".aops", ".agents", ".codex"))
     settings = Settings(profile="test-profile", host="https://example.cloud.databricks.com")
     bundle = OmnigentBundleBuilder(settings).prepare(source, destination=tmp_path / "bundle")
 

@@ -14,6 +14,7 @@ from agentops_omnigent.projects import (
     AgentProjectError,
     AgentProjectManager,
     project_validation_response,
+    source_operator_allowed,
 )
 
 
@@ -90,7 +91,7 @@ def test_create_project_generates_editable_source_and_hidden_runtime(manager):
     assert prepared.agent_id.startswith("agent-")
     assert (prepared.source / "AGENTS.md").is_file()
     assert (prepared.source / "README.md").is_file()
-    assert (prepared.source / "spec.md").is_file()
+    assert (prepared.source / "SPEC.md").is_file()
     assert (prepared.source / "skills/request-structurer/SKILL.md").is_file()
     assert (prepared.source / "agents/validator/AGENTS.md").is_file()
     assert prepared.bundle.root == prepared.source / ".aops/omnigent"
@@ -109,6 +110,7 @@ def test_ui_can_validate_and_register_project(manager):
     assert project_validation_response(prepared) == {
         "valid": True,
         "agent_id": "safe-agent",
+        "agent_version": "1.0.0",
         "version": "working",
         "source": str(manager.projects_root / "safe-agent"),
         "omnigent_agent_id": "omni-safe-agent",
@@ -151,6 +153,20 @@ def test_project_cannot_escape_projects_root(manager, tmp_path):
     create_agent("outside", outside)
     with pytest.raises(AgentProjectError, match="projects root 밖"):
         manager.prepare(outside)
+
+
+def test_source_routes_are_local_only_and_sensitive_project_is_not_prepared(manager):
+    assert source_operator_allowed("local", "127.0.0.1") is True
+    assert source_operator_allowed(None, "::1") is True
+    assert source_operator_allowed("alice@example.com", "127.0.0.1") is False
+    assert source_operator_allowed(None, "198.51.100.2") is False
+    source = create_agent("hr-agent", manager.projects_root / "hr")
+    spec = source / "SPEC.md"
+    spec.write_text(spec.read_text().replace("data_sensitivity: 내부", "data_sensitivity: 개인정보"))
+    from codex_agentops.manifest import ManifestError
+
+    with pytest.raises(ManifestError, match="대외비/개인정보"):
+        manager.prepare(source)
 
 
 def test_failed_create_removes_partial_folder(manager, monkeypatch):

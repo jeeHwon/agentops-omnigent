@@ -6,7 +6,7 @@ let savedContent = null;
 const files = [
   "AGENTS.md",
   "README.md",
-  "spec.md",
+  "SPEC.md",
   "agents/validator/AGENTS.md",
   "skills/demo/SKILL.md",
 ];
@@ -50,9 +50,9 @@ const listing = await (await window.fetch(filesystem)).json();
 assert.deepEqual(listing.data.map((item) => item.path), [
   "AGENTS.md",
   "README.md",
+  "SPEC.md",
   "agents",
   "skills",
-  "spec.md",
 ]);
 
 const skillListing = await (await window.fetch(`${filesystem}/skills`)).json();

@@ -12,7 +12,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from codex_agentops.config import Settings
-from codex_agentops.manifest import AGENT_ID_RE, create_agent, load_manifest
+from codex_agentops.manifest import (
+    AGENT_ID_RE, create_agent, load_manifest, require_source_distribution_allowed,
+)
 from codex_agentops.service import AgentOpsService
 
 from .bundle import OmnigentBundle, OmnigentBundleBuilder, validate_with_omnigent
@@ -24,6 +26,10 @@ _PROJECT_NAME_RE = re.compile(r"^[^/\\\x00]{1,80}$")
 
 class AgentProjectError(RuntimeError):
     pass
+
+
+def source_operator_allowed(user_id: str | None, remote_host: str | None) -> bool:
+    return user_id in {None, "local"} and remote_host in {"127.0.0.1", "::1"}
 
 
 @dataclass(frozen=True)
@@ -61,6 +67,7 @@ def project_validation_response(prepared: PreparedProject) -> dict[str, Any]:
     return {
         "valid": True,
         "agent_id": prepared.agent_id,
+        "agent_version": load_manifest(prepared.source).agent_version,
         "version": prepared.version,
         "source": str(prepared.source),
         "omnigent_agent_id": prepared.omnigent_agent_id,
@@ -93,7 +100,7 @@ class AgentProjectManager:
         for child in sorted(self.projects_root.iterdir(), key=lambda item: item.name.casefold()):
             if child.is_symlink() or not child.is_dir():
                 continue
-            if not (child / "AGENTS.md").is_file() or not (child / "spec.md").is_file():
+            if not (child / "AGENTS.md").is_file() or not (child / "SPEC.md").is_file():
                 continue
             try:
                 manifest = load_manifest(child)
@@ -157,6 +164,8 @@ class AgentProjectManager:
 
     def prepare(self, source: str | Path) -> PreparedProject:
         root = self._existing_source(source)
+        manifest = load_manifest(root)
+        require_source_distribution_allowed(manifest.data_sensitivity, manifest.security_level)
         bundle = self.builder.prepare(root)
         validate_with_omnigent(bundle)
         omnigent_agent_id = self.registrar(bundle.root)
@@ -253,6 +262,15 @@ def create_agentops_router(
 
     router = APIRouter()
 
+    def require_source_operator(request: Request) -> str | None:
+        user_id = require_user(request, auth_provider)
+        if not source_operator_allowed(user_id, request.client.host if request.client else None):
+            raise HTTPException(
+                status_code=403,
+                detail="Agent 원문 관리 API는 로컬 단일 사용자에게만 허용됩니다.",
+            )
+        return user_id
+
     def response(prepared: PreparedProject, project: Any) -> dict[str, Any]:
         return {
             "project": {
@@ -285,7 +303,7 @@ def create_agentops_router(
         name: str,
         operation: Callable[[], PreparedProject],
     ) -> dict[str, Any]:
-        user_id = require_user(request, auth_provider)
+        user_id = require_source_operator(request)
         prepared = await asyncio.to_thread(operation)
         try:
             project = await asyncio.to_thread(
@@ -302,15 +320,18 @@ def create_agentops_router(
         return response(prepared, project)
 
     @router.get("/projects")
-    async def list_local_projects() -> dict[str, Any]:
+    async def list_local_projects(request: Request) -> dict[str, Any]:
+        require_source_operator(request)
         return {"data": await asyncio.to_thread(manager.list_local)}
 
     @router.get("/registry")
-    async def list_registry() -> dict[str, Any]:
+    async def list_registry(request: Request) -> dict[str, Any]:
+        require_source_operator(request)
         return {"data": await asyncio.to_thread(manager.list_registry)}
 
     @router.post("/projects")
     async def create_project(request: Request, body: NewProjectRequest) -> dict[str, Any]:
+        require_source_operator(request)
         try:
             return await create_omnigent_project(
                 request,
@@ -322,6 +343,7 @@ def create_agentops_router(
 
     @router.post("/projects/load")
     async def load_project(request: Request, body: LoadProjectRequest) -> dict[str, Any]:
+        require_source_operator(request)
         name = _validate_project_name(body.name or body.agent_id)
         try:
             return await create_omnigent_project(
@@ -337,7 +359,8 @@ def create_agentops_router(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/projects/{project_name}/prepare")
-    async def prepare_project(project_name: str) -> dict[str, Any]:
+    async def prepare_project(request: Request, project_name: str) -> dict[str, Any]:
+        require_source_operator(request)
         try:
             prepared = await asyncio.to_thread(manager.prepare, manager.project_path(project_name))
             return project_validation_response(prepared)
@@ -346,23 +369,27 @@ def create_agentops_router(
 
     @router.post("/projects/{project_name}/register")
     async def register_project(
+        request: Request,
         project_name: str,
         body: RegisterProjectRequest,
     ) -> dict[str, Any]:
+        require_source_operator(request)
         try:
             return await asyncio.to_thread(manager.register, project_name, body.version)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.get("/projects/{project_name}/files")
-    async def list_files(project_name: str) -> dict[str, Any]:
+    async def list_files(request: Request, project_name: str) -> dict[str, Any]:
+        require_source_operator(request)
         try:
             return {"data": await asyncio.to_thread(manager.markdown_files, project_name)}
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.get("/projects/{project_name}/files/{relative:path}")
-    async def read_file(project_name: str, relative: str) -> dict[str, str]:
+    async def read_file(request: Request, project_name: str, relative: str) -> dict[str, str]:
+        require_source_operator(request)
         try:
             return {
                 "path": relative,
@@ -373,10 +400,12 @@ def create_agentops_router(
 
     @router.put("/projects/{project_name}/files/{relative:path}")
     async def write_file(
+        request: Request,
         project_name: str,
         relative: str,
         body: SaveMarkdownRequest,
     ) -> dict[str, Any]:
+        require_source_operator(request)
         try:
             await asyncio.to_thread(manager.write_markdown, project_name, relative, body.content)
             return {"path": relative, "saved": True}
@@ -412,5 +441,5 @@ def _allowed_markdown(relative: Path) -> bool:
     if relative.suffix.lower() != ".md":
         return False
     if len(parts) == 1:
-        return parts[0] in {"AGENTS.md", "README.md", "spec.md"}
+        return parts[0] in {"AGENTS.md", "README.md", "SPEC.md"}
     return parts[0] in {"skills", "agents"}

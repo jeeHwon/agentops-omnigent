@@ -1,6 +1,6 @@
 # AgentOps Omnigent Adapter
 
-Markdown 기반 Harness Agent를 Omnigent Web UI에서 만들고, 불러오고, 실행하는 B안 어댑터입니다.
+Markdown 기반 Skill-based Agent를 Omnigent Web UI에서 만들고, 불러오고, 실행하는 B안 어댑터입니다.
 
 Project 하나를 Agent 원본 폴더 하나로 관리합니다.
 
@@ -8,12 +8,16 @@ Project 하나를 Agent 원본 폴더 하나로 관리합니다.
 <projects-root>/<project-name>/
 ├── AGENTS.md
 ├── README.md
-├── spec.md
+├── SPEC.md
 ├── skills/
 └── agents/
 ```
 
 사용자는 이 폴더의 Markdown만 편집합니다. 실행에 필요한 Omnigent 설정과 Codex 설정은 `.aops/` 아래에 자동 생성됩니다.
+
+**보안 경계:** 이 어댑터는 원문을 로컬에 복사합니다. `대외비`/`개인정보` 또는 `강화` Agent는 로컬 실행·로드·등록을 거부하며, 원문 관리 API는 루프백 단일 사용자 전용입니다. HR처럼 실행만 허용하고 원문 비공개가 필요한 용도는 현재 방식으로 제공하지 않으며 후속 구현은 사용자 의사결정까지 보류합니다. `SPEC.md`의 `uc_permissions`는 접근제어가 아닙니다. 최신 필드·Registry 계약은 A의 `docs/SPEC_CONTRACT.md`를 참고하세요.
+
+**LLM 경로:** B는 Omnigent의 Databricks profile 인증 브로커와 기존 Codex 전용 모델 egress를 사용합니다. 전역 Codex 공급자 설정을 상속하지 않으며, 이 작업에서 추가 연결은 변경하지 않습니다.
 
 ## 1. 설치
 
@@ -44,7 +48,7 @@ aops-omni serve ~/agent-projects --host 127.0.0.1 --port 6767
 - **새 Agent 만들기**: 표준 Markdown 템플릿이 들어 있는 새 로컬 폴더를 만듭니다.
 - **Registry에서 불러오기**: 현재 사용자에게 허용된 Agent Release와 UC Skills를 검증하고 로컬 폴더로 복원합니다.
 
-Project를 선택하면 그 아래에서 세션을 만들고 대화할 수 있습니다. 세션의 파일 영역에서 `AGENTS.md`, `README.md`, `spec.md`, `skills/**/*.md`, `agents/**/*.md`를 열어 저장할 수 있습니다.
+Project를 선택하면 그 아래에서 세션을 만들고 대화할 수 있습니다. 세션의 파일 영역에서 `AGENTS.md`, `README.md`, `SPEC.md`, `skills/**/*.md`, `agents/**/*.md`를 열어 저장할 수 있습니다.
 
 Project 영역의 **검증·등록** 버튼에서는 현재 Agent를 검증하고 새 버전을 입력해 Registry에 등록할 수 있습니다. 따라서 Web UI 안에서 다음 개발 주기를 완료할 수 있습니다.
 
@@ -72,7 +76,7 @@ UC Skills + Release Artifact + Agent Registry 등록
 Omnigent Runner → Codex
 ```
 
-새 세션을 생성할 때마다 원본 Markdown을 검증하고 `.aops/omnigent`를 다시 만듭니다. Harness 지침이나 Skill을 수정한 뒤 새 세션을 열면 변경 내용이 적용됩니다. `.aops/`의 생성 파일은 직접 수정하지 않습니다.
+새 세션을 생성할 때마다 원본 Markdown을 검증하고 `.aops/omnigent`를 다시 만듭니다. Skill-based Agent 지침이나 Skill을 수정한 뒤 새 세션을 열면 변경 내용이 적용됩니다. `.aops/`의 생성 파일은 직접 수정하지 않습니다.
 
 ## 4. Registry 등록
 
@@ -116,7 +120,11 @@ MLflow agent.turn Trace
 RelevanceToQuery · Safety · Completeness
 ```
 
-Trace에는 입력, 출력, Token 사용량, Tool, Sub-agent, Agent ID·Release와 Skill 체크섬이 포함됩니다. B안 Trace에는 `agentops.runtime=omnigent`가 기록됩니다.
+Trace에는 관측 가능한 Token 사용량·Tool span, Agent ID, Release와 Skill 체크섬이 포함됩니다. Prompt/Tool 입출력 본문은 기본적으로 **수집하지 않습니다** (`AOPS_OMNIGENT_CAPTURE_CONTENT=true`로 명시적 활성화). 실제 부모·자식 세션의 토큰은 각각 Omnigent 로컬 DB와 MLflow가 일치했지만, **실제 Sub-agent는 부모와 분리된 최상위 Trace**로 저장됐습니다. 자식 session ID가 본문과 분리된 OTel 속성으로 제공되지 않는 한 계층을 보장할 수 없습니다. 새 Trace의 `agentops.subagent_span_coverage=unverified`로 이 위험을 나타내며, 사용량의 요청별 100% 커버리지·비용·Tool 내부 호출 자동 추적도 보장하지 않습니다. B안 Trace에는 `agentops.runtime=omnigent`가 기록됩니다. 상태별 검증 범위는 A 저장소의 `docs/MONITORING_STATUS.md`를 참고하십시오.
+
+현재 코드는 프롬프트와 응답이 모두 수집된 Trace만 평가하도록 scorer 필터를 생성합니다(`agentops.evaluation_inputs_available=true`). **기존 공유 MLflow 실험의 scorer 필터가 같다는 뜻은 아닙니다.** 정책 불일치 시 자동 변경하지 않고 중지합니다. 기본 비수집 모드의 Token·지연 지표와 업무 품질 지표를 혼동하지 마십시오.
+
+Web UI의 체크섬은 현재 로컬 Project의 runtime metadata를 조회한 **최선 노력** 값입니다. Project ID 중복·동시 재조립 시 누락 또는 시점 불일치가 가능하며, 실행별 불변 snapshot을 위한 별도 세션 계측이 필요합니다.
 
 ## 7. 테스트
 

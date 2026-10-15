@@ -28,7 +28,7 @@ from .bundle import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="aops-omni", description="Harness Agent의 Omnigent runtime adapter"
+        prog="aops-omni", description="Skill-based Agent의 Omnigent runtime adapter"
     )
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -106,8 +106,12 @@ def main(argv: list[str] | None = None) -> int:
             # configuration wins over machine-level harness wrappers.
             return subprocess.call(command, env=env, cwd=bundle.root)
         if args.command == "serve":
+            if args.host not in {"127.0.0.1", "::1"}:
+                raise OmnigentAdapterError(
+                    "소스 편집 Web UI는 로컬 루프백에서만 실행할 수 있습니다."
+                )
             requested = args.path.expanduser().resolve()
-            if (requested / "AGENTS.md").is_file() and (requested / "spec.md").is_file():
+            if (requested / "AGENTS.md").is_file() and (requested / "SPEC.md").is_file():
                 projects_root = requested.parent
                 source_roots = [requested]
             else:
@@ -119,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                     if child.is_dir()
                     and not child.is_symlink()
                     and (child / "AGENTS.md").is_file()
-                    and (child / "spec.md").is_file()
+                    and (child / "SPEC.md").is_file()
                 ]
             bundles = []
             for source in source_roots:
@@ -134,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
                 **telemetry_server_environment(
                     settings,
                     codex_home=data_root / "server-codex-home",
+                    projects_root=projects_root,
                 ),
                 "AOPS_OMNIGENT_WEB_DIST": str(omnigent_web_dist()),
             }

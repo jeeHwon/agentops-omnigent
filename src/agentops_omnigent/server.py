@@ -25,6 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.host not in {"127.0.0.1", "::1"}:
+        raise ValueError("Agent 원문 관리 서버는 로컬 루프백에서만 실행할 수 있습니다.")
     settings = load_settings()
 
     # Omnigent reads this constant when omnigent.server.app is imported.
@@ -67,31 +69,37 @@ def main(argv: list[str] | None = None) -> int:
         @app.middleware("http")
         async def refresh_agent_before_session(request, call_next):
             if request.method == "POST" and request.url.path.rstrip("/") == "/v1/sessions":
+                from omnigent.server.routes._auth_helpers import require_user
+                from fastapi.responses import JSONResponse
+
+                try:
+                    user_id = require_user(request, kwargs.get("auth_provider"))
+                except Exception:
+                    return JSONResponse(status_code=401, content={"detail": "Authentication required"})
                 try:
                     payload = json.loads((await request.body()) or b"{}")
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     payload = {}
                 project_id = payload.get("project_id") if isinstance(payload, dict) else None
                 if isinstance(project_id, str) and project_id:
-                    # Omnigent's loopback single-user auth provider persists
-                    # Projects under the stable owner ``local``. Older/no-auth
-                    # local databases used ``None``, so retain that fallback.
-                    project = None
-                    for owner in ("local", None):
-                        project = await asyncio.to_thread(
-                            kwargs["project_store"].get,
-                            project_id,
-                            user_id=owner,
-                        )
-                        if project is not None:
-                            break
+                    project = await asyncio.to_thread(
+                        kwargs["project_store"].get,
+                        project_id,
+                        user_id=user_id,
+                    )
                     source = (project.config or {}).get("agentops_source") if project else None
                     if isinstance(source, str) and source:
+                        if user_id not in {None, "local"} or (
+                            request.client is None
+                            or request.client.host not in {"127.0.0.1", "::1"}
+                        ):
+                            return JSONResponse(status_code=403, content={"detail": "로컬 소스 실행 권한이 없습니다."})
                         try:
-                            await asyncio.to_thread(manager.prepare, source)
+                            root = manager.project_path(Path(source).name)
+                            if str(root) != source:
+                                return JSONResponse(status_code=403, content={"detail": "Agent 소스 경로가 유효하지 않습니다."})
+                            await asyncio.to_thread(manager.prepare, root)
                         except Exception as exc:
-                            from fastapi.responses import JSONResponse
-
                             return JSONResponse(
                                 status_code=400,
                                 content={"detail": f"Agent runtime 준비 실패: {exc}"},

@@ -5,7 +5,7 @@ const nativeFetch = window.fetch.bind(window);
 function agentMarkdownPath(path, type = "file") {
   const parts = String(path).replace(/^\/+/, "").split("/").filter(Boolean);
   if (parts.length === 1) {
-    return ["AGENTS.md", "README.md", "spec.md"].includes(parts[0])
+    return ["AGENTS.md", "README.md", "SPEC.md"].includes(parts[0])
       || (["skills", "agents"].includes(parts[0]) && type === "directory");
   }
   if (!["skills", "agents"].includes(parts[0])) return false;
@@ -84,12 +84,6 @@ async function activeAgentProject() {
     agentId: project.config.agentops_agent_id || null,
     release: project.config.agentops_release || null,
   };
-}
-
-function nextReleaseVersion(version) {
-  const match = String(version || "").match(/^(\d+)\.(\d+)\.(\d+)$/);
-  if (!match) return "";
-  return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
 }
 
 function jsonResponse(body, status = 200) {
@@ -176,7 +170,7 @@ async function projectFilesystemResponse(input, options, filesystem, method) {
 
   if (method === "PUT") {
     if (!files.includes(relative) || !agentMarkdownPath(relative)) {
-      return jsonResponse({ detail: "기존 표준 Harness Markdown만 편집할 수 있습니다." }, 403);
+      return jsonResponse({ detail: "Skill-based Agent 표준 Markdown만 편집할 수 있습니다." }, 403);
     }
     const body = await requestJsonBody(input, options);
     const content = typeof body?.content === "string" ? body.content : "";
@@ -208,7 +202,7 @@ window.fetch = async (input, options = {}) => {
   if (filesystem === null) return nativeFetch(input, options);
   const method = String(options.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
   if (method !== "GET" && !agentMarkdownPath(filesystem.relative)) {
-    return new Response(JSON.stringify({ detail: "표준 Harness Markdown만 편집할 수 있습니다." }), {
+    return new Response(JSON.stringify({ detail: "Skill-based Agent 표준 Markdown만 편집할 수 있습니다." }), {
       status: 403,
       headers: { "Content-Type": "application/json" },
     });
@@ -272,7 +266,7 @@ function openDialog() {
   const submit = node("button", { type: "button", className: "aops-button primary", text: "만들기" });
   dialog.append(
     node("h2", { className: "aops-title", text: "Agent Project 추가" }),
-    node("p", { className: "aops-description", text: "Project 하나가 AGENTS.md, spec.md, Skills와 Sub-agent를 담는 Agent 폴더입니다." }),
+    node("p", { className: "aops-description", text: "Project 하나가 AGENTS.md, SPEC.md, Skills와 Sub-agent를 담는 Agent 폴더입니다." }),
     node("div", { className: "aops-modes" }, [newMode, loadMode]), fields, error,
     node("div", { className: "aops-actions" }, [cancel, submit]),
   );
@@ -394,7 +388,7 @@ async function openRegisterDialog() {
     ]),
     node("p", {
       className: "aops-help",
-      text: "기존 Release는 변경하지 않습니다. 등록 시점의 Harness, Skill 버전과 체크섬이 고정됩니다.",
+      text: "기존 Release는 변경하지 않습니다. 등록 시점의 Skill-based Agent 정의, Skill 버전과 체크섬이 고정됩니다.",
     }),
     status,
     node("div", { className: "aops-actions" }, [cancel, validateButton, registerButton]),
@@ -422,7 +416,7 @@ async function openRegisterDialog() {
     validated = false;
     registerButton.textContent = "새 Release 등록";
     refreshButtons();
-    setStatus("Harness, Skills, Sub-agent와 Omnigent 실행 구성을 검증하고 있습니다.");
+    setStatus("Skill-based Agent, Skills, Sub-agent와 Omnigent 실행 구성을 검증하고 있습니다.");
     try {
       const result = await request(
         `/v1/agentops/projects/${encodeURIComponent(project.name)}/prepare`,
@@ -430,6 +424,7 @@ async function openRegisterDialog() {
       );
       validated = Boolean(result.valid);
       project.agentId = result.agent_id;
+      versionInput.value = result.agent_version;
       setStatus(
         `검증 완료 · Agent ${result.agent_id} · Skills ${result.skills.length}개 · Sub-agents ${result.subagents.length}개`,
         "success",
@@ -502,7 +497,7 @@ async function openRegisterDialog() {
       summaryRow("현재 Release", project.release),
       summaryRow("원본 폴더", project.source),
     );
-    versionInput.value = nextReleaseVersion(project.release);
+    versionInput.value = "";
     refreshButtons();
     await validateProject();
   } catch (reason) {
