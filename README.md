@@ -120,7 +120,7 @@ MLflow agent.turn Trace
 RelevanceToQuery · Safety · Completeness
 ```
 
-Trace에는 관측 가능한 Token 사용량·Tool span, Agent ID, Release와 Skill 체크섬이 포함됩니다. Prompt/Tool 입출력 본문은 기본적으로 **수집하지 않습니다** (`AOPS_OMNIGENT_CAPTURE_CONTENT=true`로 명시적 활성화). 실제 부모·자식 세션의 토큰은 각각 Omnigent 로컬 DB와 MLflow가 일치했지만, **실제 Sub-agent는 부모와 분리된 최상위 Trace**로 저장됐습니다. 자식 session ID가 본문과 분리된 OTel 속성으로 제공되지 않는 한 계층을 보장할 수 없습니다. 새 Trace의 `agentops.subagent_span_coverage=unverified`로 이 위험을 나타내며, 사용량의 요청별 100% 커버리지·비용·Tool 내부 호출 자동 추적도 보장하지 않습니다. B안 Trace에는 `agentops.runtime=omnigent`가 기록됩니다. 상태별 검증 범위는 A 저장소의 `docs/MONITORING_STATUS.md`를 참고하십시오.
+Trace에는 **관측된 경우에 한해** Token 사용량·Tool span, Agent ID, Release와 Skill 체크섬이 포함됩니다. Prompt/Tool 입출력 본문은 기본적으로 **수집하지 않습니다** (`AOPS_OMNIGENT_CAPTURE_CONTENT=true`로 명시적 활성화). 과거 실제 부모·자식 세션의 관측 토큰은 Omnigent 로컬 DB와 MLflow가 일치했지만, 추가 재시험에서는 **첫 Turn도 재개 Turn도 사용량이 누락**됐습니다. 실제 Sub-agent는 부모와 분리된 최상위 Trace로 저장됩니다. 자식 session ID가 본문과 분리된 OTel 속성으로 제공되지 않는 한 계층을 보장할 수 없습니다. 새 Trace의 `agentops.subagent_span_coverage=unverified`로 이 위험을 나타내며, 사용량의 요청별 100% 커버리지·비용·Tool 내부 호출 자동 추적도 보장하지 않습니다. B안 Trace에는 `agentops.runtime=omnigent`가 기록됩니다. 상태별 검증 범위는 A 저장소의 `docs/MONITORING_STATUS.md`를 참고하십시오.
 
 현재 코드는 프롬프트와 응답이 모두 수집된 Trace만 평가하도록 scorer 필터를 생성합니다(`agentops.evaluation_inputs_available=true`). **기존 공유 MLflow 실험의 scorer 필터가 같다는 뜻은 아닙니다.** 정책 불일치 시 자동 변경하지 않고 중지합니다. 기본 비수집 모드의 Token·지연 지표와 업무 품질 지표를 혼동하지 마십시오.
 
